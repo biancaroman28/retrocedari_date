@@ -1,0 +1,5 @@
+venv/
+responses/
+*.html
+chromedriver-win64/
+__pycache__/
