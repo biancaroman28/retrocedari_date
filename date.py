@@ -1,95 +1,108 @@
 import os
 from bs4 import BeautifulSoup
-import csv
+import re
+import pandas as pd
 
-OUT_DIR = 'responses/'
-OUTPUT_CSV = 'dosare.csv'
+folder_html = "responses"
+num_files = 2000  # doar primele 2000
 
-# Creează CSV și scrie header
-with open(OUTPUT_CSV, 'w', newline='', encoding='utf-8') as csvfile:
-    writer = csv.writer(csvfile)
-    writer.writerow([
-        "Numar Dosar",
-        "Data Dosar",
-        "Notificari Număr",
-        "Notificari Data",
-        "Solicitanti",
-        "Adrese",
-        "DPG",
-        "Data Solutie",
-        "Rezultat Solutie"
-    ])
+# Listă pentru datele finale
+tabel_dosare = []
 
-    for file_name in sorted(os.listdir(OUT_DIR)):
-        if not file_name.endswith(".html"):
-            continue
-        path = os.path.join(OUT_DIR, file_name)
-        with open(path, 'r', encoding='utf-8') as f:
-            soup = BeautifulSoup(f, 'lxml')
+html_files = [f for f in os.listdir(folder_html) if f.endswith(".html")]
+html_files.sort(key=lambda x: int(x.split(".")[0]))
+html_files = html_files[:num_files]
 
-            # Verifică dacă există dosar valid
-            dosar_card = soup.find("h5", string=lambda t: t and "Rezultat căutare după dosarul" in t)
-            if not dosar_card:
-                print(f"⚠️ Dosar {file_name} anulat sau invalid, sărim.")
-                continue
+for idx, filename in enumerate(html_files, 1):
+    nr_dosar = filename.split(".")[0]
+    path = os.path.join(folder_html, filename)
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+        soup = BeautifulSoup(content, "lxml")
 
-            # Numar și data dosar
-            numar_tag = soup.find("span", string=lambda t: t and "Număr:" in t)
-            numar_dosar = numar_tag.get_text(strip=True).replace("Număr:","") if numar_tag else ""
-            data_tag = numar_tag.find_next("span") if numar_tag else None
-            data_dosar = data_tag.get_text(strip=True).replace("Data:","") if data_tag else ""
+    # Dosar anulat
+    dosar_anulat = 'showAlert("Dosar anulat!", "alert-danger");' in content
 
-            # Notificări (dacă există)
-            notif_tags = soup.select("div.card-body .badge.text-bg-info")
-            notif_num = notif_data = ""
-            for idx, tag in enumerate(notif_tags):
-                if "Notificare" in tag.text:
-                    spans = tag.find_parent("div").find_all("span")
-                    if len(spans) >= 2:
-                        notif_num = spans[0].get_text(strip=True).replace("Număr:", "")
-                        notif_data = spans[1].get_text(strip=True).replace("Data:", "")
+    # Dosar PMB și Notificare PMB
+    dosar_pmb = ""
+    notificare_pmb = ""
+    try:
+        cards = soup.find_all("div", class_="card-body")
+        for card in cards:
+            h5 = card.find("h5", class_="card-title")
+            if h5:
+                text = h5.get_text(strip=True)
+                if "Dosar PMB" in text:
+                    spans = card.find_all("span", class_="btn btn-outline-dark")
+                    for sp in spans:
+                        if "Număr:" in sp.get_text():
+                            dosar_pmb = sp.get_text(strip=True)
+                        if "Data:" in sp.get_text():
+                            dosar_pmb += " " + sp.get_text(strip=True)
+                elif "Notificare PMB" in text:
+                    spans = card.find_all("span", class_="btn btn-outline-dark")
+                    for sp in spans:
+                        if "Număr:" in sp.get_text():
+                            notificare_pmb = sp.get_text(strip=True)
+                        if "Data:" in sp.get_text():
+                            notificare_pmb += " " + sp.get_text(strip=True)
+    except:
+        pass
 
-            # Solicitanti
-            solicitanti_tag = soup.find("h5", string=lambda t: t and "Solicitanți" in t)
-            solicitanti = ""
-            if solicitanti_tag:
-                ol = solicitanti_tag.find_next("ol")
+    # Solicitanti
+    solicitanti = []
+    try:
+        for card in cards:
+            h5 = card.find("h5", class_="card-title")
+            if h5 and "Solicitanți" in h5.get_text():
+                ol = card.find("ol")
                 if ol:
-                    solicitanti = "; ".join(li.get_text(strip=True) for li in ol.find_all("li"))
+                    solicitanti = [li.get_text(strip=True) for li in ol.find_all("li")]
+    except:
+        pass
 
-            # Adrese
-            adrese_tag = soup.find("h5", string=lambda t: t and "Adrese" in t)
-            adrese = ""
-            if adrese_tag:
-                ol = adrese_tag.find_next("ol")
+    # Adrese
+    adrese = []
+    adrese_contemporane = []
+    adrese_istorice = []
+    tip_proprietate = []
+    try:
+        for card in cards:
+            h5 = card.find("h5", class_="card-title")
+            if h5 and "Adrese" in h5.get_text():
+                ol = card.find("ol")
                 if ol:
-                    adrese = "; ".join(li.get_text(strip=True) for li in ol.find_all("li"))
+                    for li in ol.find_all("li"):
+                        text = li.get_text(strip=True)
+                        adrese.append(text)
+                        if "Istoric:" in text:
+                            adrese_istorice.append(text)
+                        else:
+                            adrese_contemporane.append(text)
+                        match = re.search(r"\(([^)]+)\)$", text)
+                        tip_proprietate.append(match.group(1) if match else "")
+    except:
+        pass
 
-            # Solutie dosar
-            solutie_tag = soup.find("h5", string=lambda t: t and "Soluția la dosar" in t)
-            dpg = data_sol = rezultat_sol = ""
-            if solutie_tag:
-                spans = solutie_tag.find_next("div").find_all("span")
-                for span in spans:
-                    text = span.get_text(strip=True)
-                    if text.startswith("DPG:"):
-                        dpg = text.replace("DPG:", "")
-                    elif text.startswith("Dată:"):
-                        data_sol = text.replace("Dată:", "")
-                    else:
-                        rezultat_sol = text.strip()
+    multiple_adrese = len(adrese) > 1 or len(tip_proprietate) > 1
+    istorie_acte = ""
 
-            # Scrie în CSV
-            writer.writerow([
-                numar_dosar,
-                data_dosar,
-                notif_num,
-                notif_data,
-                solicitanti,
-                adrese,
-                dpg,
-                data_sol,
-                rezultat_sol
-            ])
+    tabel_dosare.append({
+        "Dosar PMB": dosar_pmb,
+        "Notificare PMB": notificare_pmb,
+        "Solicitanți": ", ".join(solicitanti),
+        "Adrese": ", ".join(adrese),
+        "Adresa contemporană": ", ".join(adrese_contemporane),
+        "Adresa istorică": ", ".join(adrese_istorice),
+        "Tip proprietate": ", ".join(tip_proprietate),
+        "Mai multe adrese/proprietăți": multiple_adrese,
+        "Istorie acte": istorie_acte
+    })
 
-print(f"✅ Toate datele extrase în {OUTPUT_CSV}")
+    if idx % 200 == 0:
+        print(f"Procesate {idx} dosare din {num_files}")
+
+# Creează DataFrame și export CSV
+df = pd.DataFrame(tabel_dosare)
+df.to_csv("dosare_primele_2000.csv", index=False, encoding="utf-8")
+print("Tabelul pentru primele 2000 de dosare a fost creat în 'dosare_primele_2000.csv'.")
